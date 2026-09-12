@@ -1,0 +1,30 @@
+name: GTF Market Scanner
+
+on:
+  schedule:
+    - cron: '*/15 3-10 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install yfinance requests pandas numpy scipy matplotlib mplfinance
+
+      - name: Clean and Execute GTF Scanner
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "with open('gtf_bot.py', 'r', encoding='utf-8') as f: c = f.read().replace('\xa0', ' '); open('gtf_bot.py', 'w', encoding='utf-8').write(c)"
+          python gtf_bot.py
