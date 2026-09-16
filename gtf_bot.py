@@ -14,11 +14,11 @@ def install_and_import(package, import_name=None):
         logging.info(f"Package '{package}' not found. Installing now...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-# Added pandas-ta for Murphy and Pring indicators
+# Removed pandas-ta to prevent Python version dependency errors on GitHub Actions
 required_packages = [
     ('requests', 'requests'), ('numpy', 'numpy'), ('pandas', 'pandas'), 
     ('yfinance', 'yfinance'), ('mplfinance', 'mplfinance'), 
-    ('scipy', 'scipy'), ('matplotlib', 'matplotlib'), ('pandas-ta', 'pandas_ta')
+    ('scipy', 'scipy'), ('matplotlib', 'matplotlib')
 ]
 
 for pip_name, imp_name in required_packages:
@@ -30,7 +30,6 @@ import pandas as pd
 import yfinance as yf
 import mplfinance as mpf
 import matplotlib.pyplot as plt
-import pandas_ta as ta
 from scipy.signal import argrelextrema
 
 # ==============================================================================
@@ -130,27 +129,45 @@ def classify_candles(df: pd.DataFrame) -> pd.DataFrame:
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['SMA7'] = df['Close'].rolling(window=7).mean()
     
-    # Murphy, LeBeau & Pring Institutional Indicators
-    try:
-        df['EMA9'] = ta.ema(df['Close'], length=9)
-        df['EMA21'] = ta.ema(df['Close'], length=21)
-        
-        adx_df = ta.adx(df['High'], df['Low'], df['Close'], length=14)
-        df['ADX'] = adx_df['ADX_14'] if adx_df is not None else 0
-        
-        df['ATR'] = ta.atr(df['High'], df['Low'], df['Close'], length=14)
-        df['RSI'] = ta.rsi(df['Close'], length=14)
-        
-        bb_df = ta.bbands(df['Close'], length=20, std=2)
-        if bb_df is not None:
-            df['BB_Upper'] = bb_df['BBU_20_2.0']
-            df['BB_Lower'] = bb_df['BBL_20_2.0']
-        else:
-            df['BB_Upper'] = df['Close']
-            df['BB_Lower'] = df['Close']
-    except Exception as e:
-        df['EMA9'], df['EMA21'], df['ADX'], df['ATR'], df['RSI'], df['BB_Upper'], df['BB_Lower'] = [0]*7
-        logging.warning(f"Indicator calculation warning: {e}")
+    # --- Native Institutional Indicators (Replaces pandas-ta) ---
+    df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
+    df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
+    
+    # True Range & ATR
+    high_low = df['High'] - df['Low']
+    high_close = np.abs(df['High'] - df['Close'].shift())
+    low_close = np.abs(df['Low'] - df['Close'].shift())
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    df['ATR'] = tr.ewm(alpha=1/14, adjust=False).mean()
+    
+    # RSI
+    delta = df['Close'].diff()
+    gain = np.where(delta > 0, delta, 0.0)
+    loss = np.where(delta < 0, -delta, 0.0)
+    avg_gain = pd.Series(gain, index=df.index).ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = pd.Series(loss, index=df.index).ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / (avg_loss + 1e-10)
+    df['RSI'] = 100 - (100 / (1 + rs))
+    
+    # ADX
+    up = df['High'] - df['High'].shift(1)
+    down = df['Low'].shift(1) - df['Low']
+    plus_dm = np.where((up > down) & (up > 0), up, 0.0)
+    minus_dm = np.where((down > up) & (down > 0), down, 0.0)
+    tr_sm = tr.ewm(alpha=1/14, adjust=False).mean()
+    plus_di = 100 * (pd.Series(plus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean() / (tr_sm + 1e-10))
+    minus_di = 100 * (pd.Series(minus_dm, index=df.index).ewm(alpha=1/14, adjust=False).mean() / (tr_sm + 1e-10))
+    dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+    df['ADX'] = dx.ewm(alpha=1/14, adjust=False).mean()
+    
+    # Bollinger Bands
+    sma20 = df['Close'].rolling(window=20).mean()
+    std20 = df['Close'].rolling(window=20).std()
+    df['BB_Upper'] = sma20 + (2 * std20)
+    df['BB_Lower'] = sma20 - (2 * std20)
+    
+    # Fill safe defaults for start of array
+    df.fillna({'RSI': 50, 'ADX': 0, 'ATR': 0, 'BB_Upper': df['Close'], 'BB_Lower': df['Close']}, inplace=True)
         
     return df
 
