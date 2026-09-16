@@ -1,8 +1,3 @@
-Here is the complete, final script. I have carefully merged the institutional logic (Murphy, LeBeau, and Pring) seamlessly into your extensive GTF SOP v4.2 framework without cutting any of your original S&D logic, charting capabilities, or formatting.
-
-The bot is strictly configured to generate automated signals and notifications without executing live trades.
-
-```python
 import os
 import sys
 import logging
