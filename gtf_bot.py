@@ -14,7 +14,7 @@ def install_and_import(package, import_name=None):
         logging.info(f"Package '{package}' not found. Installing now...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", package])
 
-# Removed pandas-ta to prevent Python version dependency errors on GitHub Actions
+# Native implementation used to prevent Python version dependency errors on GitHub Actions
 required_packages = [
     ('requests', 'requests'), ('numpy', 'numpy'), ('pandas', 'pandas'), 
     ('yfinance', 'yfinance'), ('mplfinance', 'mplfinance'), 
@@ -38,9 +38,6 @@ from scipy.signal import argrelextrema
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-BASE_CAPITAL = 100000.0  
-RISK_PERCENT = 1.0       
-RISK_PER_TRADE = BASE_CAPITAL * (RISK_PERCENT / 100.0)
 SWING_WINDOW = 15        
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -129,7 +126,7 @@ def classify_candles(df: pd.DataFrame) -> pd.DataFrame:
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
     df['SMA7'] = df['Close'].rolling(window=7).mean()
     
-    # --- Native Institutional Indicators (Replaces pandas-ta) ---
+    # --- Native Institutional Indicators ---
     df['EMA9'] = df['Close'].ewm(span=9, adjust=False).mean()
     df['EMA21'] = df['Close'].ewm(span=21, adjust=False).mean()
     
@@ -469,7 +466,7 @@ def run_sop_analysis(ticker: str):
         low_22 = df_ltf['Low'].tail(22).min()
         chandelier_stop = round(low_22 + (3 * atr), 2)
 
-    # 3. Pring Exhaustion & Divergence
+    # 3. Zone Price Exhaustion & Divergence
     rsi = round(curr.get('RSI', 50), 2)
     bb_upper = curr.get('BB_Upper', cmp * 1.5)
     bb_lower = curr.get('BB_Lower', cmp * 0.5)
@@ -502,46 +499,79 @@ def run_sop_analysis(ticker: str):
         dynamic_exit_target = nearest_opp_pl if nearest_opp_pl and nearest_opp_pl < entry_px else "N/A"
 
     if risk_per_share <= 0: return
-    qty = int(RISK_PER_TRADE / risk_per_share)
-    trade_capital = round(qty * entry_px, 2)
 
+    # --- FORMATTING ALERT STRINGS ---
     fib_500 = fib_levels.get('0.500') if fib_levels else None
     fib_618 = fib_levels.get('0.618') if fib_levels else None
-    is_golden = (min(fib_500, fib_618) <= pl <= max(fib_500, fib_618)) if fib_500 and fib_618 else False
-    golden_status = "✅ PL inside Golden Zone" if is_golden else "❌ PL outside Golden Zone" if fib_500 else "N/A"
+    fib_500_str = f"Rs {fib_500:.2f}" if fib_500 else "N/A"
+    fib_618_str = f"Rs {fib_618:.2f}" if fib_618 else "N/A"
+    swing_h_str = f"Rs {swing_high['price']:.2f}" if swing_high else "N/A"
+    swing_l_str = f"Rs {swing_low['price']:.2f}" if swing_low else "N/A"
 
-    # Message Generation with combined filters
+    if fib_500 and fib_618:
+        zone_high, zone_low = max(fib_500, fib_618), min(fib_500, fib_618)
+        is_golden = zone_low <= pl <= zone_high
+        golden_status = "✅ PL is inside Golden Zone" if is_golden else "❌ PL is outside Golden Zone"
+    else:
+        golden_status = "N/A (Swings not found)"
+
+    htf_dem_str = f"PL Rs {htf_dem['PL']} | DL Rs {htf_dem['DL']}" if htf_dem else "None"
+    htf_sup_str = f"PL Rs {htf_sup['PL']} | DL Rs {htf_sup['DL']}" if htf_sup else "None"
+    
+    freshness_status = "100% Fresh (Untested)" if selected_zone['Is_Fresh'] else f"Tested {selected_zone['Tested_Count']}x"
+    closing_status = "PASSED (Decisive)" if selected_zone['Closing_Concept'] else "Standard"
+
+    # --- ASSEMBLE TELEGRAM MESSAGE ---
     alert_msg = (
         f"<b>{action_status}</b>\n"
-        f"{'🟢 LONG SETUP' if trade_side == 'BUY' else '🔴 SHORT SETUP'}: <b>{ticker}</b>\n\n"
+        f"{'🟢 LONG SETUP' if trade_side == 'BUY' else '🔴 SHORT SETUP'}: <b>{ticker}</b> (GTF + Institutional)\n"
+        f"<b>Active Triplet</b>: {ACTIVE_TRIPLET} ({cfg['htf']} | {cfg['itf']} | {cfg['ltf']})\n\n"
         
-        f"<b>SECTION I: INSTITUTIONAL FILTERS</b>\n"
-        f"• Murphy Trend (EMA 9/21 + ADX): {murphy_status}\n"
-        f"• Pring Exhaustion: {exhaustion_warn} (RSI: {rsi})\n"
-        f"• LeBeau Chandelier Stop: Rs {chandelier_stop}\n\n"
+        f"<b>SECTION I: HTF LOCATION & CURVE (HTF: {cfg['htf']})</b>\n"
+        f"• Curve Location: <b>{curve_loc}</b>\n"
+        f"• Curve Action Bias: <b>{curve_bias}</b>\n"
+        f"• Most Recent Demand Formation: {htf_dem_str}\n"
+        f"• Most Recent Supply Formation: {htf_sup_str}\n"
+        f"• Curve Trisection Spread: Rs {round(spread, 2)}\n\n"
+        
+        f"<b>SECTION II: ITF TREND & MOMENTUM (ITF: {cfg['itf']})</b>\n"
+        f"• Trend Structure: <b>{itf_trend['Direction']} ({itf_trend['Structure']})</b>\n"
+        f"• Dynamic 20 EMA: Rs {itf_trend['EMA20']} (Above: {itf_trend['Above_EMA20']})\n"
+        f"• 7 SMA Direction: {itf_trend['SMA7_Direction']}\n"
+        f"• Golden Crossover Status: {itf_trend['Golden_Cross']}\n\n"
+        
+        f"<b>SECTION III: LTF EXECUTION ZONE ARCHITECTURE (LTF: {cfg['ltf']})</b>\n"
+        f"• Formation Pattern: <b>{selected_zone['Pattern']} ({selected_zone['Type']})</b>\n"
+        f"• Formation Date: {selected_zone['Date']}\n"
+        f"• Proximal Line (PL): Rs {pl} (B2W Marked)\n"
+        f"• Distal Line (DL): Rs {dl} (Exceptional Wick Checked)\n"
+        f"• Base Candles Count: {selected_zone['Base_Count']}\n"
+        f"• Freshness Status: {freshness_status}\n"
+        f"• Closing Concept: {closing_status}\n\n"
 
-        f"<b>SECTION II: ENTRY & EXITS (GTF SOP v4.2)</b>\n"
+        f"<b>SECTION IV: SWING & FIBONACCI (ITF: {cfg['itf']})</b>\n"
+        f"• Swing Trend Bias: <b>{trend if trend else 'N/A'}</b>\n"
+        f"• Swing High: {swing_h_str} | Swing Low: {swing_l_str}\n"
+        f"• Fib 0.500: {fib_500_str} | Fib 0.618: {fib_618_str}\n"
+        f"• Golden Zone Status: <b>{golden_status}</b>\n\n"
+        
+        f"<b>SECTION V: QUANTITATIVE SCORING & EXECUTION</b>\n"
+        f"• GTF Base Quality Score: <b>{selected_zone['Base_Score']}/7.0</b>\n"
+        f"• Confluence Points: EMA20 (+{1.0 if ema_aligned else 0}) | Cross (+{1.0 if cross_aligned else 0})\n"
+        f"• Final Institutional Score: <b>{confluence_score}/9.0</b>\n"
+        f"• Strategy Execution Type: <b>{entry_type}</b>\n\n"
+
+        f"<b>SECTION VI: ENTRY & EXITS (GTF SOP v4.2)</b>\n"
         f"• Current Price (CMP): Rs {round(cmp, 2)}\n"
         f"• Trigger Entry Order: Rs {entry_px}\n"
         f"• Structural Stop Loss: Rs {stop_px}\n"
         f"• Exit Signal 1 (Opposing Zone): Rs {dynamic_exit_target}\n"
         f"• Exit Signal 2 (2:1 RR Target): Rs {target_2r}\n\n"
 
-        f"<b>SECTION III: RISK METRICS (Capital Rs {BASE_CAPITAL})</b>\n"
-        f"• Recommended Position: <b>{qty} Shares</b>\n"
-        f"• Total Risk Allocation: Rs {round(RISK_PER_TRADE, 2)}\n"
-        f"• Total Outlay: Rs {trade_capital}\n\n"
-        
-        f"<b>SECTION IV: ZONE ARCHITECTURE (LTF: {cfg['ltf']})</b>\n"
-        f"• Proximal Line: Rs {pl} | Distal Line: Rs {dl}\n"
-        f"• Pattern: {selected_zone['Pattern']} ({selected_zone['Type']})\n"
-        f"• Base Candles: {selected_zone['Base_Count']} | Freshness: {'Fresh' if selected_zone['Is_Fresh'] else 'Tested'}\n"
-        f"• GTF Final Score: <b>{confluence_score}/9.0</b> ({entry_type})\n\n"
-
-        f"<b>SECTION V: CURVE & TREND</b>\n"
-        f"• HTF Curve: {curve_loc} ({curve_bias})\n"
-        f"• ITF Trend: {itf_trend['Direction']} ({itf_trend['Structure']})\n"
-        f"• Golden Fib Status: {golden_status}\n"
+        f"<b>SECTION VII: INSTITUTIONAL FILTERS</b>\n"
+        f"• Murphy Trend (EMA 9/21 + ADX): {murphy_status}\n"
+        f"• Zone Price Exhaustion: {exhaustion_warn} (RSI: {rsi})\n"
+        f"• LeBeau Chandelier Stop: Rs {chandelier_stop}"
     )
 
     chart_path = generate_chart(ticker, df_itf, swing_high, swing_low, fib_levels, confluence_score)
