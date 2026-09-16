@@ -540,5 +540,3 @@ if __name__ == "__main__":
             run_sop_analysis(ticker_symbol)
         except Exception as ex:
             logging.error(f"Processing exception on {ticker_symbol}: {ex}")
-
-```
